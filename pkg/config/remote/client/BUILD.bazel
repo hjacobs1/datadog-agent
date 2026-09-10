@@ -26,7 +26,10 @@ go_library(
 
 dd_agent_go_test(
     name = "client_test",
-    srcs = ["tuf_proof_test.go"],
+    srcs = [
+        "client_test.go",
+        "tuf_proof_test.go",
+    ],
     embed = [":client"],
     deps = [
         "//pkg/proto/pbgo/core",

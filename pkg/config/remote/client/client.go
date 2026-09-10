@@ -117,6 +117,10 @@ type Client struct {
 	startupSync sync.Once
 	ctx         context.Context
 	closeFn     context.CancelFunc
+	// initialUpdateDone is closed after the first successful fetch has been
+	// applied, including when that fetch contains no configuration changes.
+	initialUpdateOnce sync.Once
+	initialUpdateDone chan struct{}
 
 	lastUpdateError   error
 	backoffPolicy     backoff.Policy
@@ -326,18 +330,19 @@ func newClient(cf ConfigFetcher, opts ...func(opts *Options)) (*Client, error) {
 	installerState.Store(&pbgo.ClientUpdater{})
 
 	return &Client{
-		Options:          options,
-		ID:               generateID(),
-		startupSync:      sync.Once{},
-		ctx:              ctx,
-		closeFn:          cloneFn,
-		cwsWorkloads:     cwsWorkloads,
-		installerState:   installerState,
-		state:            repository,
-		proofTargetFiles: make(map[string][]byte),
-		backoffPolicy:    backoffPolicy,
-		listeners:        make(map[string][]Listener),
-		configFetcher:    cf,
+		Options:           options,
+		ID:                generateID(),
+		startupSync:       sync.Once{},
+		initialUpdateDone: make(chan struct{}),
+		ctx:               ctx,
+		closeFn:           cloneFn,
+		cwsWorkloads:      cwsWorkloads,
+		installerState:    installerState,
+		state:             repository,
+		proofTargetFiles:  make(map[string][]byte),
+		backoffPolicy:     backoffPolicy,
+		listeners:         make(map[string][]Listener),
+		configFetcher:     cf,
 	}, nil
 }
 
@@ -405,6 +410,19 @@ func (c *Client) GetConfigs(product string) map[string]state.RawConfig {
 	c.m.Lock()
 	defer c.m.Unlock()
 	return c.state.GetConfigs(product)
+}
+
+// InitialUpdateDone returns a channel that is closed after the first
+// successful remote-config fetch has been applied. Consumers can use it to
+// distinguish an authoritative empty snapshot from a client that has not
+// connected yet.
+func (c *Client) InitialUpdateDone() <-chan struct{} {
+	return c.initialUpdateDone
+}
+
+// Done returns a channel that is closed when the client is stopped.
+func (c *Client) Done() <-chan struct{} {
+	return c.ctx.Done()
 }
 
 // SetCWSWorkloads updates the list of workloads that needs cws profiles
@@ -531,6 +549,7 @@ func (c *Client) update() error {
 	if err != nil {
 		return err
 	}
+	defer c.initialUpdateOnce.Do(func() { close(c.initialUpdateDone) })
 	// We don't want to force the products to reload config if nothing changed
 	// in the latest update.
 	if len(changedProducts) == 0 {
