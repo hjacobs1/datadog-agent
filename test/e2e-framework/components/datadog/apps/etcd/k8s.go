@@ -34,22 +34,29 @@ until nc -z localhost 2379; do
   sleep 1
 done
 
-echo "[init] Waiting for etcd v2 API to be ready..."
-until curl -sf http://localhost:2379/v2/keys/; do
+echo "[init] Waiting for etcd to be ready..."
+until curl -sf http://localhost:2379/health; do
   echo "[init] etcd not ready yet..."
   sleep 1
 done
 
-echo "[init] Setting check configuration keys in etcd v2..."
+echo "[init] Setting check configuration keys in etcd v3..."
 
-curl -sf -XPUT http://localhost:2379/v2/keys/datadog/check_configs/apps-prometheus/check_names \
-  --data-urlencode 'value=["openmetrics"]'
+# The etcd v3 KV API has no plain-text REST form: keys/values must be
+# base64-encoded and sent through the gRPC-gateway JSON API (/v3/kv/put),
+# enabled by default on the client port since etcd 3.4.
+put() {
+  key_b64=$(printf '%s' "$1" | base64 | tr -d '\n')
+  value_b64=$(printf '%s' "$2" | base64 | tr -d '\n')
+  curl -sf -XPOST http://localhost:2379/v3/kv/put \
+    -d "{\"key\": \"$key_b64\", \"value\": \"$value_b64\"}"
+}
 
-curl -sf -XPUT http://localhost:2379/v2/keys/datadog/check_configs/apps-prometheus/init_configs \
-  --data-urlencode 'value=[{}]'
+put "/datadog/check_configs/apps-prometheus/check_names" '["openmetrics"]'
 
-curl -sf -XPUT http://localhost:2379/v2/keys/datadog/check_configs/apps-prometheus/instances \
-  --data-urlencode 'value=[{"openmetrics_endpoint": "http://%%host%%:8080/metrics", "metrics":[{"prom_gauge": "prom_gauge_configured_in_etcd"}]}]'
+put "/datadog/check_configs/apps-prometheus/init_configs" '[{}]'
+
+put "/datadog/check_configs/apps-prometheus/instances" '[{"openmetrics_endpoint": "http://%%host%%:8080/metrics", "metrics":[{"prom_gauge": "prom_gauge_configured_in_etcd"}]}]'
 
 echo "[init] Done setting check configuration keys in etcd"
 sleep infinity
@@ -151,16 +158,12 @@ func K8sAppDefinition(e config.Env, kubeProvider *kubernetes.Provider, opts ...p
 					ImagePullSecrets:   imagePullSecrets,
 					Containers: corev1.ContainerArray{
 						&corev1.ContainerArgs{
-							Name: pulumi.String("etcd"),
-							// The agent only supports the v2 API, which is not
-							// supported anymore in newer versions of etcd.
+							Name:  pulumi.String("etcd"),
 							Image: pulumi.String(etcdImage),
 							Command: pulumi.StringArray{
 								pulumi.String("etcd"),
 							},
 							Args: pulumi.ToStringArray([]string{
-								// The agent only supports the v2 API, that's why we use --enable-v2.
-								"--enable-v2",
 								"--name=etcd-0",
 								"--data-dir=/var/lib/etcd",
 								"--listen-client-urls=http://0.0.0.0:2379",
