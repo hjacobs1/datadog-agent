@@ -19,3 +19,7 @@ features:
     ``ForcedResources`` status condition and its vertical target is reported with the ``Manual``
     source. An invalid value, such as a malformed quantity or a request above its limit, is ignored
     as a whole and reported in the ``ForcedResources`` condition.
+
+    A new ``datadog.cluster_agent.autoscaling.workload.force_resources`` gauge reports ``1`` while a
+    valid override is set and ``0`` otherwise, so that an override left in place after an incident
+    can be alerted on.
