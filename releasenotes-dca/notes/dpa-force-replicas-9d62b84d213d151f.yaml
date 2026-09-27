@@ -1,0 +1,18 @@
+---
+features:
+  - |
+    Added the ``autoscaling.datadoghq.com/force-replicas`` annotation on ``DatadogPodAutoscaler``
+    objects, which pins the replica count of the target workload and ignores recommendations from
+    every source. For example, ``autoscaling.datadoghq.com/force-replicas: "28"`` holds the target
+    at 28 replicas until the annotation is removed.
+
+    This is a break-glass override intended for incident response, so it deliberately bypasses two
+    safety mechanisms: the value is **not** clamped by ``spec.constraints``, and it is reached in a
+    single step rather than through the configured scale-up and scale-down rate rules. That lets an
+    operator add capacity without also widening the constraints or waiting out a rule period, and
+    without editing the object ``spec`` at all.
+
+    The override is still suppressed by the ``autoscaling.datadoghq.com/pause`` annotation and by
+    ``spec.applyPolicy.mode: Preview``. While a count is pinned, the autoscaler reports a
+    ``ForcedReplicas`` status condition and its horizontal target is reported with the ``Manual``
+    source. A value that is not a positive integer is ignored, as if the annotation were absent.

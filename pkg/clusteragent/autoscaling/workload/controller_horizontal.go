@@ -83,25 +83,44 @@ func (hr *horizontalController) performScaling(ctx context.Context, podAutoscale
 	}
 
 	currentDesiredReplicas := scale.Spec.Replicas
-	replicasFromRec := scalingValues.Horizontal.Replicas
 
-	// Handling min/max replicas
-	specConstraints := autoscalerSpec.Constraints
-	minReplicas := defaultMinReplicas
-	if specConstraints != nil && specConstraints.MinReplicas != nil {
-		minReplicas = *specConstraints.MinReplicas
-	}
+	var horizontalAction *datadoghqcommon.DatadogPodAutoscalerHorizontalAction
+	var nextEvalAfter time.Duration
+	var err error
 
-	maxReplicas := defaultMaxReplicas
-	if specConstraints != nil && specConstraints.MaxReplicas != nil && *specConstraints.MaxReplicas >= minReplicas {
-		maxReplicas = *specConstraints.MaxReplicas
-	}
+	if forcedReplicas, forced := autoscalerInternal.ForcedReplicas(); forced {
+		// Break-glass override: reach the pinned count in a single step, without the spec
+		// constraints and without the scaling rate rules, so that an operator adding capacity
+		// during an incident does not also have to widen spec.constraints or wait out a rule
+		// period. The apply-mode gate below still runs, so pause and Preview keep suppressing
+		// it like any other action.
+		horizontalAction = &datadoghqcommon.DatadogPodAutoscalerHorizontalAction{
+			FromReplicas:        currentDesiredReplicas,
+			ToReplicas:          forcedReplicas,
+			RecommendedReplicas: &forcedReplicas,
+			Time:                metav1.NewTime(hr.clock.Now()),
+		}
+	} else {
+		replicasFromRec := scalingValues.Horizontal.Replicas
 
-	// Compute the desired number of replicas based on recommendations, rules and constraints
-	horizontalAction, nextEvalAfter, err := hr.computeScaleAction(autoscalerInternal, scalingValues.Horizontal.Source, currentDesiredReplicas, replicasFromRec, minReplicas, maxReplicas)
-	if err != nil {
-		autoscalerInternal.UpdateFromHorizontalAction(nil, err)
-		return autoscaling.NoRequeue, nil
+		// Handling min/max replicas
+		specConstraints := autoscalerSpec.Constraints
+		minReplicas := defaultMinReplicas
+		if specConstraints != nil && specConstraints.MinReplicas != nil {
+			minReplicas = *specConstraints.MinReplicas
+		}
+
+		maxReplicas := defaultMaxReplicas
+		if specConstraints != nil && specConstraints.MaxReplicas != nil && *specConstraints.MaxReplicas >= minReplicas {
+			maxReplicas = *specConstraints.MaxReplicas
+		}
+
+		// Compute the desired number of replicas based on recommendations, rules and constraints
+		horizontalAction, nextEvalAfter, err = hr.computeScaleAction(autoscalerInternal, scalingValues.Horizontal.Source, currentDesiredReplicas, replicasFromRec, minReplicas, maxReplicas)
+		if err != nil {
+			autoscalerInternal.UpdateFromHorizontalAction(nil, err)
+			return autoscaling.NoRequeue, nil
+		}
 	}
 	// Target replicas has not changed because we are already scaled or due to scaling rules
 	if horizontalAction.FromReplicas == horizontalAction.ToReplicas {

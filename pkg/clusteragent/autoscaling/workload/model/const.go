@@ -16,6 +16,11 @@ import (
 // carries no enum validation, so surfacing a new one requires no CRD change.
 const DatadogPodAutoscalerPausedCondition datadoghqcommon.DatadogPodAutoscalerConditionType = "Paused"
 
+// DatadogPodAutoscalerForcedReplicasCondition indicates that the replica count is pinned by the
+// force-replicas annotation, so recommendations are being ignored. Declared here for the same
+// reason as the paused condition: the condition type carries no enum validation.
+const DatadogPodAutoscalerForcedReplicasCondition datadoghqcommon.DatadogPodAutoscalerConditionType = "ForcedReplicas"
+
 const (
 	// PreviewAnnotationKey is the annotation key used to enable preview/alpha autoscaling features.
 	// Its value is a JSON object where each key enables a specific feature flag, e.g.:
@@ -45,6 +50,17 @@ const (
 	// WARNING: "false" means "do not force", i.e. the default staleness-driven behaviour. It
 	// does NOT disable the local fallback, which remains `spec.fallback.horizontal.enabled`.
 	ForceFallbackAnnotationKey = "autoscaling.datadoghq.com/force-fallback"
+
+	// ForceReplicasAnnotationKey is the annotation key used to pin the replica count of the
+	// target workload, ignoring recommendations from every source.
+	// Value is a positive integer, e.g.:
+	//   autoscaling.datadoghq.com/force-replicas: "28"
+	// This is a break-glass override: the value is NOT clamped by spec.constraints, and it is
+	// reached in a single step rather than through the scale-up/scale-down rate rules, so an
+	// operator can add capacity during an incident without also patching the spec. It is still
+	// suppressed by the pause annotation and by applyPolicy.mode: Preview.
+	// A value that is not a positive integer is ignored, as if the annotation were absent.
+	ForceReplicasAnnotationKey = "autoscaling.datadoghq.com/force-replicas"
 
 	// RecommendationIDAnnotation is the annotation key used to store the recommendation ID
 	RecommendationIDAnnotation = "autoscaling.datadoghq.com/rec-id"

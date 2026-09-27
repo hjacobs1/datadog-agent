@@ -21,6 +21,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/DataDog/datadog-agent/pkg/clusteragent/autoscaling"
+	"github.com/DataDog/datadog-agent/pkg/util/pointer"
 
 	datadoghqcommon "github.com/DataDog/datadog-operator/api/datadoghq/common"
 	datadoghq "github.com/DataDog/datadog-operator/api/datadoghq/v1alpha2"
@@ -1070,6 +1071,88 @@ func TestUpdateOpsAnnotations(t *testing.T) {
 			assert.Equal(t, tt.expectedFallbackForced, pai.IsFallbackForced())
 		})
 	}
+}
+
+func TestUpdateOpsAnnotationsForceReplicas(t *testing.T) {
+	tests := []struct {
+		name     string
+		value    string
+		expected *int32
+	}{
+		{name: "positive integer", value: "28", expected: pointer.Ptr[int32](28)},
+		{name: "one", value: "1", expected: pointer.Ptr[int32](1)},
+		// Scaling to zero is not something the autoscaler does, so "0" is a mistake rather
+		// than a way to stop a workload.
+		{name: "zero is invalid", value: "0"},
+		{name: "negative is invalid", value: "-3"},
+		{name: "non-numeric is invalid", value: "lots"},
+		{name: "float is invalid", value: "2.5"},
+		{name: "empty is unset", value: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pai := PodAutoscalerInternal{}
+			pai.UpdateOpsAnnotations(map[string]string{ForceReplicasAnnotationKey: tt.value})
+
+			replicas, forced := pai.ForcedReplicas()
+			if tt.expected == nil {
+				assert.False(t, forced, "value %q must be ignored", tt.value)
+				return
+			}
+			assert.True(t, forced)
+			assert.Equal(t, *tt.expected, replicas)
+		})
+	}
+}
+
+// TestSetActiveScalingValuesForcedReplicas verifies that selecting the Manual source surfaces
+// the pinned count as the active scaling value, so the status reports what the autoscaler is
+// actually targeting rather than the recommendation it is ignoring.
+func TestSetActiveScalingValuesForcedReplicas(t *testing.T) {
+	currentTime := time.Now()
+
+	pai := PodAutoscalerInternal{}
+	pai.UpdateOpsAnnotations(map[string]string{ForceReplicasAnnotationKey: "28"})
+	pai.UpdateFromMainValues(ScalingValues{
+		Horizontal: &HorizontalScalingValues{
+			Source:    datadoghqcommon.DatadogPodAutoscalerAutoscalingValueSource,
+			Timestamp: currentTime,
+			Replicas:  5,
+		},
+	}, 1)
+
+	pai.SetActiveScalingValues(currentTime, pointer.Ptr(datadoghqcommon.DatadogPodAutoscalerManualValueSource), nil)
+
+	require.NotNil(t, pai.ScalingValues().Horizontal)
+	assert.Equal(t, int32(28), pai.ScalingValues().Horizontal.Replicas,
+		"the pinned count must win over the backend recommendation")
+	assert.Equal(t, datadoghqcommon.DatadogPodAutoscalerManualValueSource, pai.ScalingValues().Horizontal.Source)
+}
+
+// TestBuildStatusForcedReplicasCondition verifies the condition is only surfaced while pinned.
+func TestBuildStatusForcedReplicasCondition(t *testing.T) {
+	findForced := func(status datadoghqcommon.DatadogPodAutoscalerStatus) *datadoghqcommon.DatadogPodAutoscalerCondition {
+		for i := range status.Conditions {
+			if status.Conditions[i].Type == DatadogPodAutoscalerForcedReplicasCondition {
+				return &status.Conditions[i]
+			}
+		}
+		return nil
+	}
+
+	pai := NewPodAutoscalerInternal(&datadoghq.DatadogPodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{Name: "dpa", Namespace: "default"},
+		Spec:       datadoghq.DatadogPodAutoscalerSpec{Owner: datadoghqcommon.DatadogPodAutoscalerLocalOwner},
+	})
+
+	assert.Nil(t, findForced(pai.BuildStatus(metav1.Now(), nil)), "no condition when not pinned")
+
+	pai.UpdateOpsAnnotations(map[string]string{ForceReplicasAnnotationKey: "28"})
+	forced := findForced(pai.BuildStatus(metav1.Now(), nil))
+	require.NotNil(t, forced)
+	assert.Equal(t, corev1.ConditionTrue, forced.Status)
+	assert.Contains(t, forced.Message, "28", "the message must name the pinned count")
 }
 
 // TestUpdateOpsAnnotationsClearedOnRemoval verifies that removing the annotations resumes the

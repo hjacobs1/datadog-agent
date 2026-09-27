@@ -697,6 +697,12 @@ func getActiveScalingSources(currentTime time.Time, podAutoscalerInternal *model
 		return pointer.Ptr(datadoghqcommon.DatadogPodAutoscalerAutoscalingValueSource), activeVerticalSource
 	}
 
+	// A replica count pinned by annotation overrides every recommendation source, including
+	// the fallback, so it is selected before any staleness consideration.
+	if _, forced := podAutoscalerInternal.ForcedReplicas(); forced {
+		return pointer.Ptr(datadoghqcommon.DatadogPodAutoscalerManualValueSource), activeVerticalSource
+	}
+
 	// Check if horizontal scaling is disabled; if disabled, always use main values as source
 	if podAutoscalerInternal.Spec().ApplyPolicy != nil {
 		scaleUpPolicy := podAutoscalerInternal.Spec().ApplyPolicy.ScaleUp

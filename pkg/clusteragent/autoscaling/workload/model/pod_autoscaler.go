@@ -90,6 +90,10 @@ type PodAutoscalerInternal struct {
 	// fallbackForced is set from the force-fallback annotation on the DPA object
 	fallbackForced bool
 
+	// forcedReplicas is set from the force-replicas annotation on the DPA object.
+	// nil when the annotation is absent or invalid.
+	forcedReplicas *int32
+
 	// scalingValues represents the active scaling values that should be used
 	scalingValues ScalingValues
 
@@ -274,6 +278,20 @@ func parsePreviewAnnotationString(raw string) previewOptions {
 func (p *PodAutoscalerInternal) UpdateOpsAnnotations(annotations map[string]string) {
 	p.paused = parseOpsBoolAnnotation(annotations, PauseAnnotationKey)
 	p.fallbackForced = parseOpsBoolAnnotation(annotations, ForceFallbackAnnotationKey)
+	p.forcedReplicas = parseOpsReplicasAnnotation(annotations, ForceReplicasAnnotationKey)
+}
+
+// parseOpsReplicasAnnotation parses a replica-count operational annotation. An annotation that
+// is absent, empty, not an integer, or not strictly positive is treated as not set: scaling to
+// zero is not something the autoscaler does, so "0" is a mistake rather than a way to stop a
+// workload.
+func parseOpsReplicasAnnotation(annotations map[string]string, key string) *int32 {
+	value, err := strconv.ParseInt(annotations[key], 10, 32)
+	if err != nil || value <= 0 {
+		return nil
+	}
+
+	return pointer.Ptr(int32(value))
 }
 
 // parseOpsBoolAnnotation parses a boolean operational annotation. An annotation that is
@@ -306,6 +324,32 @@ func (p *PodAutoscalerInternal) IsLocalFallbackEnabled() bool {
 	}
 	spec := p.Spec()
 	return spec == nil || spec.Fallback == nil || spec.Fallback.Horizontal.Enabled
+}
+
+// ForcedReplicas returns the replica count pinned by annotation, and whether one is set.
+func (p *PodAutoscalerInternal) ForcedReplicas() (int32, bool) {
+	if p.forcedReplicas == nil {
+		return 0, false
+	}
+
+	return *p.forcedReplicas, true
+}
+
+// forcedScalingValues builds the scaling values implied by the force-replicas annotation.
+// Returns empty values when the annotation is not set.
+func (p *PodAutoscalerInternal) forcedScalingValues(currentTime time.Time) ScalingValues {
+	replicas, ok := p.ForcedReplicas()
+	if !ok {
+		return ScalingValues{}
+	}
+
+	return ScalingValues{
+		Horizontal: &HorizontalScalingValues{
+			Source:    datadoghqcommon.DatadogPodAutoscalerManualValueSource,
+			Timestamp: currentTime,
+			Replicas:  replicas,
+		},
+	}
 }
 
 // EffectiveApplyMode returns the apply mode to enforce, which is the spec apply mode unless
@@ -423,6 +467,11 @@ func (p *PodAutoscalerInternal) SetActiveScalingValues(currentTime time.Time, ho
 			return p.scalingValues
 		case *source == datadoghqcommon.DatadogPodAutoscalerLocalValueSource:
 			return p.fallbackScalingValues
+		case *source == datadoghqcommon.DatadogPodAutoscalerManualValueSource:
+			// A replica count pinned by annotation is synthesised rather than received, so
+			// that the status reports what the autoscaler is actually targeting instead of
+			// the recommendation it is ignoring.
+			return p.forcedScalingValues(currentTime)
 		default:
 			return p.mainScalingValues
 		}
@@ -1171,6 +1220,7 @@ func (p *PodAutoscalerInternal) BuildStatus(currentTime metav1.Time, currentStat
 		datadoghqcommon.DatadogPodAutoscalerVerticalAbleToApply:                nil,
 		datadoghqcommon.DatadogPodAutoscalerVerticalScalingLimitedCondition:    nil,
 		DatadogPodAutoscalerPausedCondition:                                    nil,
+		DatadogPodAutoscalerForcedReplicasCondition:                            nil,
 	}
 
 	if currentStatus != nil {
@@ -1202,6 +1252,14 @@ func (p *PodAutoscalerInternal) BuildStatus(currentTime metav1.Time, currentStat
 	// object for no signal.
 	if p.paused {
 		status.Conditions = append(status.Conditions, newCondition(corev1.ConditionTrue, "", "", currentTime, DatadogPodAutoscalerPausedCondition, existingConditions))
+	}
+
+	// Building forced-replicas condition, so that kubectl describe explains why the autoscaler
+	// is ignoring its recommendations. Only surfaced while the annotation is set, for the same
+	// reason as the paused condition.
+	if replicas, forced := p.ForcedReplicas(); forced {
+		message := fmt.Sprintf("replica count pinned to %d by the %s annotation", replicas, ForceReplicasAnnotationKey)
+		status.Conditions = append(status.Conditions, newCondition(corev1.ConditionTrue, "", message, currentTime, DatadogPodAutoscalerForcedReplicasCondition, existingConditions))
 	}
 
 	// Building errors related to compute recommendations

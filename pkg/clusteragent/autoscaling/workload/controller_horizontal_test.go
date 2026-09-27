@@ -1718,3 +1718,115 @@ func TestHorizontalControllerForceFallbackRemovedWithFallbackDisabled(t *testing
 		"local values must not stay active once the force-fallback annotation is removed")
 	f.scaler.AssertNumberOfCalls(t, "update", 0)
 }
+
+// TestHorizontalControllerForceReplicas covers the break-glass replica override. The two
+// behaviours asserted here are the whole point of the feature: the pinned count is not clamped
+// by spec.constraints, and it is reached in one step rather than through the rate rules — so an
+// operator adding capacity during an incident does not also have to widen the spec or wait.
+func TestHorizontalControllerForceReplicas(t *testing.T) {
+	expectedGVK := schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}
+
+	// maxReplicas deliberately below the pinned value, and a restrictive scale-up rule that
+	// would otherwise allow only a small step per period.
+	newFakePai := func() *model.FakePodAutoscalerInternal {
+		return &model.FakePodAutoscalerInternal{
+			Namespace: "default",
+			Name:      "test",
+			TargetGVK: expectedGVK,
+			Spec: &datadoghq.DatadogPodAutoscalerSpec{
+				TargetRef: v2.CrossVersionObjectReference{
+					Name:       "test",
+					Kind:       expectedGVK.Kind,
+					APIVersion: expectedGVK.Group + "/" + expectedGVK.Version,
+				},
+				Constraints: &datadoghqcommon.DatadogPodAutoscalerConstraints{
+					MinReplicas: pointer.Ptr[int32](1),
+					MaxReplicas: pointer.Ptr[int32](20),
+				},
+				ApplyPolicy: &datadoghq.DatadogPodAutoscalerApplyPolicy{
+					Mode: datadoghq.DatadogPodAutoscalerApplyModeApply,
+					ScaleUp: &datadoghqcommon.DatadogPodAutoscalerScalingPolicy{
+						Rules: []datadoghqcommon.DatadogPodAutoscalerScalingRule{
+							{Type: datadoghqcommon.DatadogPodAutoscalerPercentScalingRuleType, Value: 10, PeriodSeconds: 60},
+						},
+					},
+				},
+			},
+		}
+	}
+
+	// syncWithAnnotations builds the internal, applies ops annotations, and runs one sync.
+	syncWithAnnotations := func(f *horizontalControllerFixture, fakePai *model.FakePodAutoscalerInternal, annotations map[string]string) model.PodAutoscalerInternal {
+		autoscalerInternal := fakePai.Build()
+		autoscalerInternal.UpdateOpsAnnotations(annotations)
+
+		// Mirror what handleScaling does: pick the active source, then materialise its values.
+		horizontalSource, verticalSource := getActiveScalingSources(f.clock.Now(), &autoscalerInternal)
+		autoscalerInternal.SetActiveScalingValues(f.clock.Now(), horizontalSource, verticalSource)
+
+		scale, gr, scaleErr := f.scaler.get(context.Background(), fakePai.Namespace, fakePai.Spec.TargetRef.Name, expectedGVK)
+		_, err := f.controller.sync(context.Background(), &datadoghq.DatadogPodAutoscaler{
+			ObjectMeta: metav1.ObjectMeta{Name: fakePai.Name, Namespace: fakePai.Namespace},
+		}, &autoscalerInternal, scale, gr, scaleErr)
+		assert.NoError(f.t, err)
+		return autoscalerInternal
+	}
+
+	t.Run("not clamped by constraints and not rate limited", func(t *testing.T) {
+		f := newHorizontalControllerFixture(t, time.Now())
+		fakePai := newFakePai()
+		f.scaler.mockGet(*fakePai, 5, 5, nil)
+		f.scaler.mockUpdate(*fakePai, 28, 5, nil)
+
+		syncWithAnnotations(f, fakePai, map[string]string{model.ForceReplicasAnnotationKey: "28"})
+
+		// 28 exceeds maxReplicas (20), and a 10%/60s rule from 5 replicas would otherwise
+		// permit far less than 28 on the first sync.
+		f.scaler.AssertNumberOfCalls(t, "update", 1)
+	})
+
+	t.Run("no recommendation at all still applies", func(t *testing.T) {
+		// The main incident case: the backend is down or untrusted, so there is nothing to
+		// scale from. The pinned count must still take effect.
+		f := newHorizontalControllerFixture(t, time.Now())
+		fakePai := newFakePai()
+		f.scaler.mockGet(*fakePai, 5, 5, nil)
+		f.scaler.mockUpdate(*fakePai, 12, 5, nil)
+
+		autoscaler := syncWithAnnotations(f, fakePai, map[string]string{model.ForceReplicasAnnotationKey: "12"})
+
+		f.scaler.AssertNumberOfCalls(t, "update", 1)
+		require.NotNil(t, autoscaler.ScalingValues().Horizontal)
+		assert.Equal(t, datadoghqcommon.DatadogPodAutoscalerManualValueSource, autoscaler.ScalingValues().Horizontal.Source,
+			"status must report the pinned value, not the absent recommendation")
+		assert.Equal(t, int32(12), autoscaler.ScalingValues().Horizontal.Replicas)
+		// Assert the value actually applied, not just that some scale happened: the rate
+		// rules would otherwise permit only 5 -> 6 on the first sync.
+		require.NotNil(t, autoscaler.HorizontalLastActions())
+		assert.Equal(t, int32(12), autoscaler.HorizontalLastActions()[len(autoscaler.HorizontalLastActions())-1].ToReplicas)
+	})
+
+	t.Run("pause suppresses the pinned count", func(t *testing.T) {
+		f := newHorizontalControllerFixture(t, time.Now())
+		fakePai := newFakePai()
+		f.scaler.mockGet(*fakePai, 5, 5, nil)
+
+		syncWithAnnotations(f, fakePai, map[string]string{
+			model.ForceReplicasAnnotationKey: "28",
+			model.PauseAnnotationKey:         "true",
+		})
+
+		f.scaler.AssertNumberOfCalls(t, "update", 0)
+	})
+
+	t.Run("preview mode suppresses the pinned count", func(t *testing.T) {
+		f := newHorizontalControllerFixture(t, time.Now())
+		fakePai := newFakePai()
+		fakePai.Spec.ApplyPolicy.Mode = datadoghq.DatadogPodAutoscalerApplyModePreview
+		f.scaler.mockGet(*fakePai, 5, 5, nil)
+
+		syncWithAnnotations(f, fakePai, map[string]string{model.ForceReplicasAnnotationKey: "28"})
+
+		f.scaler.AssertNumberOfCalls(t, "update", 0)
+	})
+}

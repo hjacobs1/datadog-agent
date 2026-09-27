@@ -1318,6 +1318,29 @@ func TestGetActiveScalingSourcesOpsAnnotations(t *testing.T) {
 			"a paused autoscaler must not switch to local values, it applies nothing at all")
 	})
 
+	t.Run("force-replicas wins over fresh product values and over the fallback", func(t *testing.T) {
+		dpai := staleMainFreshFallback.Build()
+		dpai.UpdateOpsAnnotations(map[string]string{model.ForceReplicasAnnotationKey: "28"})
+
+		horizontalSource, _ := getActiveScalingSources(currentTime, &dpai)
+		require.NotNil(t, horizontalSource)
+		assert.Equal(t, datadoghqcommon.DatadogPodAutoscalerManualValueSource, *horizontalSource,
+			"a pinned replica count overrides every recommendation source, including the fallback")
+	})
+
+	t.Run("pause wins over force-replicas", func(t *testing.T) {
+		dpai := staleMainFreshFallback.Build()
+		dpai.UpdateOpsAnnotations(map[string]string{
+			model.PauseAnnotationKey:         "true",
+			model.ForceReplicasAnnotationKey: "28",
+		})
+
+		horizontalSource, _ := getActiveScalingSources(currentTime, &dpai)
+		require.NotNil(t, horizontalSource)
+		assert.Equal(t, datadoghqcommon.DatadogPodAutoscalerAutoscalingValueSource, *horizontalSource,
+			"a paused autoscaler applies nothing, including a pinned replica count")
+	})
+
 	t.Run("force-fallback wins over fresh product values", func(t *testing.T) {
 		dpai := model.FakePodAutoscalerInternal{
 			Namespace:         "default",
