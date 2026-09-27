@@ -197,3 +197,82 @@ func TestGetVerticalPatchingStrategyForcedResources(t *testing.T) {
 		assert.Equal(t, recommendedStrategy, forcedStrategy, "apply policy %+v", applyPolicy)
 	}
 }
+
+// TestPatcherApplyForcedResourcesMultipleContainers covers an annotation that overrides several
+// containers at once, each with different fields, next to a container it does not list and one
+// that has no recommendation at all.
+func TestPatcherApplyForcedResourcesMultipleContainers(t *testing.T) {
+	pai := model.FakePodAutoscalerInternal{
+		Namespace: "ns1",
+		Name:      "autoscaler1",
+		Spec: &datadoghq.DatadogPodAutoscalerSpec{
+			TargetRef: autoscalingv2.CrossVersionObjectReference{Kind: "Deployment", APIVersion: "apps/v1", Name: "test-deployment"},
+			Constraints: &datadoghqcommon.DatadogPodAutoscalerConstraints{
+				Containers: []datadoghqcommon.DatadogPodAutoscalerContainerConstraints{{
+					Name:       "*",
+					MaxAllowed: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")},
+				}},
+			},
+		},
+		MainScalingValues: model.ScalingValues{
+			Vertical: &model.VerticalScalingValues{
+				Source:        datadoghqcommon.DatadogPodAutoscalerAutoscalingValueSource,
+				Timestamp:     time.Now().Add(-time.Minute),
+				ResourcesHash: "version1",
+				ContainerResources: []datadoghqcommon.DatadogPodAutoscalerContainerResources{
+					{
+						Name:     "app",
+						Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("500m"), corev1.ResourceMemory: resource.MustParse("256Mi")},
+					},
+					{
+						Name:     "sidecar",
+						Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("64Mi")},
+						Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("128Mi")},
+					},
+					{
+						Name:     "logger",
+						Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("50m")},
+					},
+				},
+			},
+		},
+	}.Build()
+	pai.UpdateOpsAnnotations(map[string]string{model.ForceResourcesAnnotationKey: `{
+		"app":     {"cpu": {"request": "2"}},
+		"sidecar": {"memory": {"limit": "512Mi"}},
+		"worker":  {"cpu": {"request": "300m", "limit": "600m"}, "memory": {"request": "1Gi"}}
+	}`})
+	require.NotNil(t, pai.ForcedResources(), "a multi-container annotation must parse")
+	assert.Equal(t, []string{"app", "sidecar", "worker"}, pai.ForcedResources().ContainerNames())
+	horizontalSource, verticalSource := getActiveScalingSources(time.Now(), &pai)
+	pai.SetActiveScalingValues(time.Now(), horizontalSource, verticalSource)
+
+	s := autoscalingstore.NewStore[model.PodAutoscalerInternal]()
+	item, _ := s.Get(pai.ID())
+	item.Upsert(pai, "")
+
+	pod := newForcedResourcesPod()
+	pod.Spec.Containers = []corev1.Container{{Name: "app"}, {Name: "sidecar"}, {Name: "logger"}, {Name: "worker"}}
+	_, err := NewPodPatcher(s, nil, nil).ApplyRecommendations(pod)
+	require.NoError(t, err)
+
+	resources := map[string]*corev1.ResourceRequirements{}
+	for i := range pod.Spec.Containers {
+		resources[pod.Spec.Containers[i].Name] = &pod.Spec.Containers[i].Resources
+	}
+
+	assert.Equal(t, "2", resources["app"].Requests.Cpu().String(), "app: forced cpu request, not clamped")
+	assert.Equal(t, "256Mi", resources["app"].Requests.Memory().String(), "app: memory keeps its recommendation")
+
+	assert.Equal(t, "512Mi", resources["sidecar"].Limits.Memory().String(), "sidecar: forced memory limit")
+	assert.Equal(t, "64Mi", resources["sidecar"].Requests.Memory().String(), "sidecar: memory request keeps its recommendation")
+	assert.Equal(t, "100m", resources["sidecar"].Requests.Cpu().String(), "sidecar: cpu keeps its recommendation")
+
+	assert.Equal(t, "50m", resources["logger"].Requests.Cpu().String(), "logger: unlisted, keeps its recommendation")
+
+	assert.Equal(t, "300m", resources["worker"].Requests.Cpu().String(), "worker: forced without any recommendation")
+	assert.Equal(t, "600m", resources["worker"].Limits.Cpu().String())
+	assert.Equal(t, "1Gi", resources["worker"].Requests.Memory().String())
+	_, hasMemoryLimit := resources["worker"].Limits[corev1.ResourceMemory]
+	assert.False(t, hasMemoryLimit, "worker: a limit neither forced nor recommended is left untouched")
+}
