@@ -1130,6 +1130,56 @@ func TestSetActiveScalingValuesForcedReplicas(t *testing.T) {
 	assert.Equal(t, datadoghqcommon.DatadogPodAutoscalerManualValueSource, pai.ScalingValues().Horizontal.Source)
 }
 
+// TestSetActiveScalingValuesManualVertical verifies that a Manual vertical recommendation, as
+// delivered by remote config, is still applied: the Manual source is not reserved for the
+// force-replicas annotation, which only synthesises horizontal values.
+func TestSetActiveScalingValuesManualVertical(t *testing.T) {
+	currentTime := time.Now()
+	manualVertical := &VerticalScalingValues{
+		Source:        datadoghqcommon.DatadogPodAutoscalerManualValueSource,
+		Timestamp:     currentTime,
+		ResourcesHash: "manual-hash",
+		ContainerResources: []datadoghqcommon.DatadogPodAutoscalerContainerResources{{
+			Name:     "app",
+			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("200m")},
+		}},
+	}
+
+	for _, tt := range []struct {
+		name        string
+		annotations map[string]string
+		// horizontalSource is what getActiveScalingSources returns for these annotations.
+		horizontalSource datadoghqcommon.DatadogPodAutoscalerValueSource
+	}{
+		{name: "without force-replicas", horizontalSource: datadoghqcommon.DatadogPodAutoscalerAutoscalingValueSource},
+		{name: "with force-replicas", annotations: map[string]string{ForceReplicasAnnotationKey: "28"}, horizontalSource: datadoghqcommon.DatadogPodAutoscalerManualValueSource},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			pai := PodAutoscalerInternal{}
+			pai.UpdateOpsAnnotations(tt.annotations)
+			pai.UpdateFromMainValues(ScalingValues{
+				Horizontal: &HorizontalScalingValues{
+					Source:    datadoghqcommon.DatadogPodAutoscalerAutoscalingValueSource,
+					Timestamp: currentTime,
+					Replicas:  5,
+				},
+				Vertical: manualVertical,
+			}, 1)
+
+			pai.SetActiveScalingValues(currentTime, pointer.Ptr(tt.horizontalSource), pointer.Ptr(datadoghqcommon.DatadogPodAutoscalerManualValueSource))
+
+			require.NotNil(t, pai.ScalingValues().Vertical, "the manual vertical recommendation must not be dropped")
+			assert.Equal(t, "manual-hash", pai.ScalingValues().Vertical.ResourcesHash)
+			require.NotNil(t, pai.ScalingValues().Horizontal)
+			if _, forced := pai.ForcedReplicas(); forced {
+				assert.Equal(t, int32(28), pai.ScalingValues().Horizontal.Replicas)
+			} else {
+				assert.Equal(t, int32(5), pai.ScalingValues().Horizontal.Replicas)
+			}
+		})
+	}
+}
+
 // TestBuildStatusForcedReplicasCondition verifies the condition is only surfaced while pinned.
 func TestBuildStatusForcedReplicasCondition(t *testing.T) {
 	findForced := func(status datadoghqcommon.DatadogPodAutoscalerStatus) *datadoghqcommon.DatadogPodAutoscalerCondition {

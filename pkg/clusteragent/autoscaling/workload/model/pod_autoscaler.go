@@ -467,18 +467,22 @@ func (p *PodAutoscalerInternal) SetActiveScalingValues(currentTime time.Time, ho
 			return p.scalingValues
 		case *source == datadoghqcommon.DatadogPodAutoscalerLocalValueSource:
 			return p.fallbackScalingValues
-		case *source == datadoghqcommon.DatadogPodAutoscalerManualValueSource:
-			// A replica count pinned by annotation is synthesised rather than received, so
-			// that the status reports what the autoscaler is actually targeting instead of
-			// the recommendation it is ignoring.
-			return p.forcedScalingValues(currentTime)
 		default:
 			return p.mainScalingValues
 		}
 	}
 
 	// Update scaling values
-	p.scalingValues.Horizontal = selectScalingValues(horizontalActiveSource).Horizontal
+	if _, forced := p.ForcedReplicas(); forced && horizontalActiveSource != nil &&
+		*horizontalActiveSource == datadoghqcommon.DatadogPodAutoscalerManualValueSource {
+		// A replica count pinned by annotation is synthesised rather than received, so that
+		// the status reports what the autoscaler is actually targeting instead of the
+		// recommendation it is ignoring. This is horizontal only: a Manual source also comes
+		// from remote config (e.g. manual vertical recommendations), which lives in main values.
+		p.scalingValues.Horizontal = p.forcedScalingValues(currentTime).Horizontal
+	} else {
+		p.scalingValues.Horizontal = selectScalingValues(horizontalActiveSource).Horizontal
+	}
 
 	// A nil source retains the previous active values, which may be a product recommendation.
 	// While the fallback is forced but no local values are usable yet, keeping it would let the
