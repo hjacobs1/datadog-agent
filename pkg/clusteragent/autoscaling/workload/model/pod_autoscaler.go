@@ -500,6 +500,17 @@ func (p *PodAutoscalerInternal) SetActiveScalingValues(currentTime time.Time, ho
 		p.scalingValues.Horizontal = nil
 	}
 
+	// Likewise, a replica count pinned by the force-replicas annotation must not outlive it:
+	// without a recommendation to take over, it would be retained and keep being targeted
+	// (clamped to the constraints) with a Manual source, as if the annotation were still set.
+	// A Manual horizontal recommendation from remote config lives in main values, so a retained
+	// Manual value is only the synthesised one when the main values do not hold one.
+	if horizontalActiveSource == nil && p.forcedReplicas == nil &&
+		p.scalingValues.Horizontal != nil && p.scalingValues.Horizontal.Source == datadoghqcommon.DatadogPodAutoscalerManualValueSource &&
+		(p.mainScalingValues.Horizontal == nil || p.mainScalingValues.Horizontal.Source != datadoghqcommon.DatadogPodAutoscalerManualValueSource) {
+		p.scalingValues.Horizontal = nil
+	}
+
 	// selectScalingValues(nil) returns p.scalingValues — a self-assignment that would
 	// keep any previously-constrained vertical value (including a burstable sentinel)
 	// alive across cycles. When the backend stops emitting a vertical recommendation,

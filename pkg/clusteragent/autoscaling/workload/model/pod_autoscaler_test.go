@@ -1130,6 +1130,62 @@ func TestSetActiveScalingValuesForcedReplicas(t *testing.T) {
 	assert.Equal(t, datadoghqcommon.DatadogPodAutoscalerManualValueSource, pai.ScalingValues().Horizontal.Source)
 }
 
+// TestSetActiveScalingValuesForcedReplicasRemoved verifies that a pinned replica count does not
+// outlive the force-replicas annotation when no source is selected to take over.
+func TestSetActiveScalingValuesForcedReplicasRemoved(t *testing.T) {
+	currentTime := time.Now()
+	manualSource := pointer.Ptr(datadoghqcommon.DatadogPodAutoscalerManualValueSource)
+
+	t.Run("without recommendation the pinned count is dropped", func(t *testing.T) {
+		pai := PodAutoscalerInternal{}
+		pai.UpdateOpsAnnotations(map[string]string{ForceReplicasAnnotationKey: "7"})
+		pai.SetActiveScalingValues(currentTime, manualSource, nil)
+		require.NotNil(t, pai.ScalingValues().Horizontal)
+
+		pai.UpdateOpsAnnotations(map[string]string{})
+		pai.SetActiveScalingValues(currentTime, nil, nil)
+
+		assert.Nil(t, pai.ScalingValues().Horizontal,
+			"a removed pin must not keep being targeted with a Manual source until a recommendation arrives")
+	})
+
+	t.Run("a Manual recommendation from remote config is retained", func(t *testing.T) {
+		manual := &HorizontalScalingValues{
+			Source:    datadoghqcommon.DatadogPodAutoscalerManualValueSource,
+			Timestamp: currentTime.Add(-time.Hour),
+			Replicas:  5,
+		}
+		pai := FakePodAutoscalerInternal{
+			MainScalingValues: ScalingValues{Horizontal: manual},
+			ScalingValues:     ScalingValues{Horizontal: manual},
+		}.Build()
+
+		pai.SetActiveScalingValues(currentTime, nil, nil)
+
+		require.NotNil(t, pai.ScalingValues().Horizontal, "retaining current values is unchanged for remote config Manual values")
+		assert.Equal(t, int32(5), pai.ScalingValues().Horizontal.Replicas)
+	})
+
+	t.Run("with a recommendation control returns to it", func(t *testing.T) {
+		pai := PodAutoscalerInternal{}
+		pai.UpdateOpsAnnotations(map[string]string{ForceReplicasAnnotationKey: "7"})
+		pai.UpdateFromMainValues(ScalingValues{
+			Horizontal: &HorizontalScalingValues{
+				Source:    datadoghqcommon.DatadogPodAutoscalerAutoscalingValueSource,
+				Timestamp: currentTime,
+				Replicas:  1,
+			},
+		}, 1)
+		pai.SetActiveScalingValues(currentTime, manualSource, nil)
+
+		pai.UpdateOpsAnnotations(map[string]string{})
+		pai.SetActiveScalingValues(currentTime, pointer.Ptr(datadoghqcommon.DatadogPodAutoscalerAutoscalingValueSource), nil)
+
+		require.NotNil(t, pai.ScalingValues().Horizontal)
+		assert.Equal(t, int32(1), pai.ScalingValues().Horizontal.Replicas)
+	})
+}
+
 // TestSetActiveScalingValuesManualVertical verifies that a Manual vertical recommendation, as
 // delivered by remote config, is still applied: the Manual source is not reserved for the
 // force-replicas annotation, which only synthesises horizontal values.

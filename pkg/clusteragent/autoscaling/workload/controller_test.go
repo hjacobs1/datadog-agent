@@ -1328,6 +1328,29 @@ func TestGetActiveScalingSourcesOpsAnnotations(t *testing.T) {
 			"a pinned replica count overrides every recommendation source, including the fallback")
 	})
 
+	t.Run("removing force-replicas without recommendation selects no source", func(t *testing.T) {
+		// The pinned count is still the active value, and there is nothing else: no product
+		// values, no fallback values. SetActiveScalingValues is what drops the retained pin.
+		dpai := model.FakePodAutoscalerInternal{
+			Namespace:         "default",
+			Name:              "dpa-0",
+			Spec:              &datadoghq.DatadogPodAutoscalerSpec{},
+			CreationTimestamp: currentTime.Add(-60 * time.Minute),
+			ScalingValues: model.ScalingValues{
+				Horizontal: &model.HorizontalScalingValues{
+					Source:    datadoghqcommon.DatadogPodAutoscalerManualValueSource,
+					Timestamp: currentTime.Add(-30 * time.Second),
+					Replicas:  7,
+				},
+			},
+		}.Build()
+
+		horizontalSource, verticalSource := getActiveScalingSources(currentTime, &dpai)
+		assert.Nil(t, horizontalSource)
+		dpai.SetActiveScalingValues(currentTime, horizontalSource, verticalSource)
+		assert.Nil(t, dpai.ScalingValues().Horizontal, "the removed pin must not stay the target")
+	})
+
 	t.Run("pause wins over force-replicas", func(t *testing.T) {
 		dpai := staleMainFreshFallback.Build()
 		dpai.UpdateOpsAnnotations(map[string]string{
