@@ -95,6 +95,10 @@ func (u *verticalController) sync(ctx context.Context, podAutoscaler *datadoghq.
 	// cleared on the next sync since constraints re-applied to already-clamped values are no-ops.
 	constrainedVertical := scalingValues.Vertical.DeepCopy()
 	limitErr, err := applyVerticalConstraints(constrainedVertical, autoscalerInternal.Spec().Constraints, autoscalerInternal.IsBurstable())
+	if err == nil {
+		// Resources forced by annotation are a break-glass override: they win over constraints.
+		err = autoscalerInternal.ReapplyForcedResources(constrainedVertical)
+	}
 	if err != nil {
 		autoscalerInternal.SetConstrainedVerticalScaling(nil, nil)
 		autoscalerInternal.UpdateFromVerticalAction(nil, err)

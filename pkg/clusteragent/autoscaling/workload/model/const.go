@@ -21,6 +21,10 @@ const DatadogPodAutoscalerPausedCondition datadoghqcommon.DatadogPodAutoscalerCo
 // reason as the paused condition: the condition type carries no enum validation.
 const DatadogPodAutoscalerForcedReplicasCondition datadoghqcommon.DatadogPodAutoscalerConditionType = "ForcedReplicas"
 
+// DatadogPodAutoscalerForcedResourcesCondition indicates that container resources are overridden
+// by the force-resources annotation. Declared here for the same reason as the paused condition.
+const DatadogPodAutoscalerForcedResourcesCondition datadoghqcommon.DatadogPodAutoscalerConditionType = "ForcedResources"
+
 const (
 	// PreviewAnnotationKey is the annotation key used to enable preview/alpha autoscaling features.
 	// Its value is a JSON object where each key enables a specific feature flag, e.g.:
@@ -61,6 +65,17 @@ const (
 	// suppressed by the pause annotation and by applyPolicy.mode: Preview.
 	// A value that is not a positive integer is ignored, as if the annotation were absent.
 	ForceReplicasAnnotationKey = "autoscaling.datadoghq.com/force-replicas"
+
+	// ForceResourcesAnnotationKey is the annotation key used to override container resources,
+	// ignoring the recommendation for the values it sets. Value is a JSON object by container:
+	//   autoscaling.datadoghq.com/force-resources: '{"app": {"cpu": {"request": "2", "limit": "4"}}}'
+	// Only the fields set are forced: other containers, resources, requests and limits keep their
+	// recommended value. Like force-replicas, forced values are NOT clamped by spec.constraints,
+	// and they are still suppressed by the pause annotation and by applyPolicy.mode: Preview.
+	// Resources are applied like any vertical recommendation (in-place resize, eviction or rollout).
+	// An invalid value (bad JSON, unsupported resource, bad quantity, request above limit) is
+	// ignored as a whole, as if the annotation were absent.
+	ForceResourcesAnnotationKey = "autoscaling.datadoghq.com/force-resources"
 
 	// RecommendationIDAnnotation is the annotation key used to store the recommendation ID
 	RecommendationIDAnnotation = "autoscaling.datadoghq.com/rec-id"

@@ -99,6 +99,11 @@ func (pa podPatcher) ApplyRecommendations(pod *corev1.Pod) (bool, error) {
 		log.Warnf("Autoscaler %s: failed to apply vertical constraints for POD %s/%s, not patching resources: %v", autoscaler.ID(), pod.Namespace, pod.Name, err)
 		return patched, nil
 	}
+	// Resources forced by annotation win over constraints, as in the vertical controller.
+	if err := autoscaler.ReapplyForcedResources(constrainedVertical); err != nil {
+		log.Warnf("Autoscaler %s: failed to apply forced resources for POD %s/%s, not patching resources: %v", autoscaler.ID(), pod.Namespace, pod.Name, err)
+		return patched, nil
+	}
 
 	// Use the active scaling values hash (mirrored to the DPA status) so the annotation stays
 	// identical across replicas; not the recomputed constrained hash.

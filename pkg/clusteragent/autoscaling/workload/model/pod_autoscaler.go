@@ -94,6 +94,20 @@ type PodAutoscalerInternal struct {
 	// nil when the annotation is absent or invalid.
 	forcedReplicas *int32
 
+	// forcedResources is set from the force-resources annotation on the DPA object.
+	// nil when the annotation is absent or invalid.
+	forcedResources ForcedResources
+	// forcedResourcesAnnotation is the raw annotation value forcedResources was parsed from, so
+	// that it is only re-parsed, and forcedResourcesSince only reset, when the value changes.
+	forcedResourcesAnnotation string
+	// forcedResourcesSince is when the current force-resources value was first seen. It stamps
+	// forced values that have no recommendation to take a timestamp from, and must stay stable
+	// across syncs to not make the status change on every sync.
+	forcedResourcesSince time.Time
+	// forcedResourcesErr is why the force-resources annotation was ignored, surfaced in the
+	// ForcedResources condition so that a typo in a break-glass action does not go unnoticed.
+	forcedResourcesErr error
+
 	// scalingValues represents the active scaling values that should be used
 	scalingValues ScalingValues
 
@@ -279,6 +293,12 @@ func (p *PodAutoscalerInternal) UpdateOpsAnnotations(annotations map[string]stri
 	p.paused = parseOpsBoolAnnotation(annotations, PauseAnnotationKey)
 	p.fallbackForced = parseOpsBoolAnnotation(annotations, ForceFallbackAnnotationKey)
 	p.forcedReplicas = parseOpsReplicasAnnotation(annotations, ForceReplicasAnnotationKey)
+
+	if value := annotations[ForceResourcesAnnotationKey]; value != p.forcedResourcesAnnotation {
+		p.forcedResourcesAnnotation = value
+		p.forcedResources, p.forcedResourcesErr = parseForceResourcesAnnotation(value)
+		p.forcedResourcesSince = time.Now()
+	}
 }
 
 // parseOpsReplicasAnnotation parses a replica-count operational annotation. An annotation that
@@ -350,6 +370,39 @@ func (p *PodAutoscalerInternal) forcedScalingValues(currentTime time.Time) Scali
 			Replicas:  replicas,
 		},
 	}
+}
+
+// ForcedResources returns the container resources overridden by annotation, nil if none.
+func (p *PodAutoscalerInternal) ForcedResources() ForcedResources {
+	return p.forcedResources
+}
+
+// ReapplyForcedResources overlays the resources forced by annotation on vertical values that went
+// through the vertical constraints, so that forced values are never clamped or stripped by them.
+// No-op when nothing is forced or when paused, matching SetActiveScalingValues.
+func (p *PodAutoscalerInternal) ReapplyForcedResources(values *VerticalScalingValues) error {
+	if p.forcedResources == nil || p.paused {
+		return nil
+	}
+	return p.forcedResources.Apply(values)
+}
+
+// forcedVerticalValues builds the active vertical values implied by the force-resources
+// annotation: the main recommendation, which is the only vertical source, with the forced
+// values overlaid. Without a recommendation, only the forced values are set.
+func (p *PodAutoscalerInternal) forcedVerticalValues() *VerticalScalingValues {
+	values := &VerticalScalingValues{Timestamp: p.forcedResourcesSince}
+	if p.mainScalingValues.Vertical != nil {
+		values = p.mainScalingValues.Vertical.DeepCopy()
+	}
+	values.Source = datadoghqcommon.DatadogPodAutoscalerManualValueSource
+
+	if err := p.forcedResources.Apply(values); err != nil {
+		// Not expected: hashing only fails on unserializable data. Without a hash the vertical
+		// controller treats it as no recommendation, which is the safe outcome.
+		values.ResourcesHash = ""
+	}
+	return values
 }
 
 // EffectiveApplyMode returns the apply mode to enforce, which is the spec apply mode unless
@@ -520,6 +573,14 @@ func (p *PodAutoscalerInternal) SetActiveScalingValues(currentTime time.Time, ho
 		p.scalingValues.Vertical = nil
 	} else {
 		p.scalingValues.Vertical = selectScalingValues(verticalActiveSource).Vertical
+	}
+
+	// Resources forced by annotation are overlaid on whatever the recommendation is, including
+	// none at all, which is the incident case. This keys off the annotation rather than the
+	// source: a Manual vertical source also comes from remote config. A paused autoscaler keeps
+	// reporting the recommendation, as it applies nothing either way.
+	if p.forcedResources != nil && !p.paused {
+		p.scalingValues.Vertical = p.forcedVerticalValues()
 	}
 
 	// Update error states based on main product recommendations
@@ -1236,6 +1297,7 @@ func (p *PodAutoscalerInternal) BuildStatus(currentTime metav1.Time, currentStat
 		datadoghqcommon.DatadogPodAutoscalerVerticalScalingLimitedCondition:    nil,
 		DatadogPodAutoscalerPausedCondition:                                    nil,
 		DatadogPodAutoscalerForcedReplicasCondition:                            nil,
+		DatadogPodAutoscalerForcedResourcesCondition:                           nil,
 	}
 
 	if currentStatus != nil {
@@ -1275,6 +1337,17 @@ func (p *PodAutoscalerInternal) BuildStatus(currentTime metav1.Time, currentStat
 	if replicas, forced := p.ForcedReplicas(); forced {
 		message := fmt.Sprintf("replica count pinned to %d by the %s annotation", replicas, ForceReplicasAnnotationKey)
 		status.Conditions = append(status.Conditions, newCondition(corev1.ConditionTrue, "", message, currentTime, DatadogPodAutoscalerForcedReplicasCondition, existingConditions))
+	}
+
+	// Building forced-resources condition, for the same reason. An annotation that could not be
+	// parsed is surfaced as False with the parse error: it is ignored, and the operator who set it
+	// during an incident must be able to see that it did not take effect.
+	if p.forcedResources != nil {
+		message := fmt.Sprintf("resources overridden for containers %s by the %s annotation", p.forcedResources, ForceResourcesAnnotationKey)
+		status.Conditions = append(status.Conditions, newCondition(corev1.ConditionTrue, "", message, currentTime, DatadogPodAutoscalerForcedResourcesCondition, existingConditions))
+	} else if p.forcedResourcesErr != nil {
+		message := fmt.Sprintf("ignoring invalid %s annotation: %v", ForceResourcesAnnotationKey, p.forcedResourcesErr)
+		status.Conditions = append(status.Conditions, newCondition(corev1.ConditionFalse, forcedResourcesInvalidReason, message, currentTime, DatadogPodAutoscalerForcedResourcesCondition, existingConditions))
 	}
 
 	// Building errors related to compute recommendations

@@ -189,9 +189,10 @@ func TestGeneratePodAutoscalerMetricsSingleTimeseriesPerContext(t *testing.T) {
 }
 
 func expectedAdditionalMetricsCount(internal *model.PodAutoscalerInternal) int {
-	// The paused and force_replicas gauges are always emitted, like local.fallback_enabled, so
-	// that "not paused" / "not pinned" is an alertable 0 rather than an absent series.
-	return 2 + expectedApplyModeMetricsCount(internal) + expectedControlledResourcesMetricsCount(internal)
+	// The paused, force_replicas and force_resources gauges are always emitted, like
+	// local.fallback_enabled, so that "not paused" / "not forced" is an alertable 0 rather than an
+	// absent series.
+	return 3 + expectedApplyModeMetricsCount(internal) + expectedControlledResourcesMetricsCount(internal)
 }
 
 func expectedApplyModeMetricsCount(internal *model.PodAutoscalerInternal) int {

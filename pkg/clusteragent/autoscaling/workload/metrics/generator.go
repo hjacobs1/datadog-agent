@@ -316,6 +316,19 @@ func GeneratePodAutoscalerMetrics(internal *model.PodAutoscalerInternal) metrics
 		Tags:  baseTags,
 	})
 
+	// Whether container resources are overridden by the force-resources annotation (1 or 0)
+	forcedResourcesValue := 0.0
+	if internal.ForcedResources() != nil {
+		forcedResourcesValue = 1.0
+	}
+
+	metrics = append(metrics, metricsstore.StructuredMetric{
+		Name:  metricPrefix + ".force_resources",
+		Type:  metricsstore.MetricTypeGauge,
+		Value: forcedResourcesValue,
+		Tags:  baseTags,
+	})
+
 	// 3. DPA apply mode
 	metrics = appendApplyModeMetrics(metrics, internal, baseTags)
 

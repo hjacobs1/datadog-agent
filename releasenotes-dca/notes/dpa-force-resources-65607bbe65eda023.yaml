@@ -1,0 +1,21 @@
+---
+features:
+  - |
+    Added the ``autoscaling.datadoghq.com/force-resources`` annotation on ``DatadogPodAutoscaler``
+    objects, which overrides container resources and ignores the vertical recommendation for the
+    values it sets. The value is a JSON object keyed by container name, for example
+    ``{"app": {"cpu": {"request": "2", "limit": "4"}, "memory": {"request": "200Mi"}}}``.
+
+    Only the values that are set are forced: other containers, and the resources, requests and
+    limits left out of the annotation, keep following the recommendation. Forced values also apply
+    when there is no recommendation at all, and they are rolled out like any vertical
+    recommendation, through an in-place resize when enabled, otherwise through pod eviction or a
+    rollout.
+
+    This is a break-glass override intended for incident response: forced values are **not**
+    clamped by ``spec.constraints``, and they are applied without editing the object ``spec``. They
+    are still suppressed by the ``autoscaling.datadoghq.com/pause`` annotation and by
+    ``spec.applyPolicy.mode: Preview``. While an override is set, the autoscaler reports a
+    ``ForcedResources`` status condition and its vertical target is reported with the ``Manual``
+    source. An invalid value, such as a malformed quantity or a request above its limit, is ignored
+    as a whole and reported in the ``ForcedResources`` condition.
