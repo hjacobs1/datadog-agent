@@ -61,6 +61,7 @@ dd_agent_go_test(
         "//comp/core/log/mock",
         "//comp/core/sysprobeconfig/def",
         "//comp/core/sysprobeconfig/mock",
+        "//comp/metadata/inventoryagent/def",
         "//pkg/config/fetcher",
         "//pkg/config/fetcher/sysprobe",
         "//pkg/config/mock",
