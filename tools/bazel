@@ -83,6 +83,16 @@ fi
 # Emulate the CPU limit containers should normally see via cgroup quota, currently inhibited on Datadog's k8s clusters:
 # https://datadoghq.atlassian.net/wiki/spaces/cxg/pages/3473212607/Container+CPU+limits+in+internal+environments
 if [ -n "${KUBERNETES_CPU_LIMIT-}" ] && [ "$(uname -s)" = Linux ]; then
+  >&2 echo proc.self.cgroup
+  >&2 cat /proc/self/cgroup
+  >&2 echo cgroup in mountinfo
+  >&2 grep cgroup /proc/self/mountinfo || true
+  >&2 echo cpu.max
+  >&2 cat /sys/fs/cgroup/cpu.max
+  >&2 echo memory.max
+  >&2 cat /sys/fs/cgroup/memory.max
+  >&2 echo cpu.stat
+  >&2 cat /sys/fs/cgroup/cpu.stat
   max_cpus=$(awk -v n="$KUBERNETES_CPU_LIMIT" 'BEGIN {
     if (n ~ /m$/) { sub(/m$/, "", n); n = n / 1000 }  # e.g. 1000m -> 1
     print int(n) + (n != int(n))  # ceil(n)
