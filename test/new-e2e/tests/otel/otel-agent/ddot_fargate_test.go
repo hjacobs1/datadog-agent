@@ -53,12 +53,37 @@ func (s *ddotFargateTestSuite) TestDDOTCollectorRunningMetricTaggedWithTaskARN()
 
 	const fargateMetricName = "otel.ddot_collector.metrics.running.fargate"
 
+	// Precondition: the otel-agent must be shipping *something* before asserting
+	// on one metric name. A Fargate task that never started and a running metric
+	// that is never emitted both leave the metric list empty, and the assertion
+	// below cannot tell them apart. Nothing else catches a dead task either --
+	// the service is created with ContinueBeforeSteadyState, so Pulumi reports
+	// the stack as provisioned even while the task crashloops.
+	var metricNames []string
+	require.EventuallyWithTf(s.T(), func(c *assert.CollectT) {
+		metricNames, err = s.Env().FakeIntake.Client().GetMetricNames()
+		assert.NoError(c, err)
+		assert.NotEmpty(c, metricNames)
+	}, 3*time.Minute, 10*time.Second,
+		"fakeintake received no metrics at all, so the standalone otel-agent is not shipping. "+
+			"Check the ECS service's task status (a task that fails to start looks identical here) "+
+			"before suspecting the %s emission logic.", fargateMetricName)
+
 	var metrics []*aggregator.MetricSeries
 	require.EventuallyWithT(s.T(), func(c *assert.CollectT) {
+		// Refreshed each tick so the failure report below lists what the intake
+		// actually held at the end, not what it held when the precondition passed.
+		if names, nameErr := s.Env().FakeIntake.Client().GetMetricNames(); nameErr == nil {
+			metricNames = names
+		}
 		metrics, err = s.Env().FakeIntake.Client().FilterMetrics(fargateMetricName)
 		assert.NoError(c, err)
 		assert.NotEmpty(c, metrics)
 	}, 5*time.Minute, 10*time.Second)
+
+	require.NotEmptyf(s.T(), metrics,
+		"%s never arrived, but the otel-agent is shipping other metrics, so this is an emission bug "+
+			"rather than a dead task. Metric names received: %v", fargateMetricName, metricNames)
 
 	require.NotEmpty(s.T(), metrics)
 	m := metrics[0]
