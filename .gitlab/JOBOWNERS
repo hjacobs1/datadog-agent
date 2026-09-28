@@ -10,6 +10,7 @@ lint*                                @DataDog/agent-devx
 notify*                              @DataDog/agent-devx
 check_modules_replace                @DataDog/agent-devx
 fakeintake_check_version_bump        @DataDog/agent-devx
+dda_token_command_test_*             @DataDog/agent-devx
 publish_fakeintake_pinned            @DataDog/agent-devx
 
 # Deps build

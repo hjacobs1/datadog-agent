@@ -1,0 +1,52 @@
+---
+# [TEST] Validates DDA_FEATURE_FLAGS_CI_TOKEN_COMMAND with dda from DataDog/datadog-agent-dev#310. Drop before merge.
+.dda_token_command_test:
+  stage: .pre
+  needs: []
+  rules:
+    - when: on_success
+  variables:
+    DDA_TEST_REF: pierrelouis.veyrenc/ACIX-2082-configurable-vault-command
+
+.dda_token_command_test_check:
+  - dda --version
+  - dda self feature agent-ci-gitlab-short-lived-tokens --json | tee dda_token_command_test.json
+  - python3 -c "import json; r = json.load(open('dda_token_command_test.json')); raise SystemExit(r['error'] is not None or r['defaulted'])"
+
+dda_token_command_test_linux:
+  extends: [.dda_token_command_test, .linux_x64]
+  script:
+    - pip install "git+https://github.com/DataDog/datadog-agent-dev.git@${DDA_TEST_REF}"
+    - !reference [.dda_token_command_test_check]
+
+dda_token_command_test_macos:
+  extends: .dda_token_command_test
+  tags: ["macos:sonoma-arm64", "specific:true"]
+  id_tokens:
+    CI_IDENTITIES_GITLAB_ID_TOKEN:
+      aud: ci-identities
+  before_script:
+    - !reference [.install_python_dependencies]
+    - '"$uv" pip install --python "$DDA_ROOT/dda/bin/python" --reinstall-package dda "git+https://github.com/DataDog/datadog-agent-dev.git@${DDA_TEST_REF}"'
+  script:
+    - !reference [.dda_token_command_test_check]
+  after_script:
+    - !reference [.macos_cleanup_python_dependencies]
+
+dda_token_command_test_windows:
+  extends: [.dda_token_command_test, .windows_docker_default, .bazel:defs:cache:windows]
+  variables:
+    ARCH: "x64"
+  script:
+    - $ErrorActionPreference = "Stop"
+    - !reference [.docker_pull_winbuildimage_instrumented]
+    - >
+      .\tools\ci\docker-run-with-bazel-cache.ps1
+      -v "$(Get-Location):c:\mnt"
+      -e GITLAB_CI
+      -e AWS_NETWORKING=true
+      -e CI_IDENTITIES_GITLAB_ID_TOKEN
+      -e DDA_TEST_REF
+      ${WINBUILDIMAGE}
+      powershell.exe -c "c:\mnt\tools\ci\dda_token_command_test.ps1"
+    - If ($lastExitCode -ne "0") { throw "Previous command returned $lastExitCode" }
