@@ -25,6 +25,7 @@ dd_agent_go_test(
     ],
     data = [
         "config/complete.yml",
+        "config/ddot-fargate.yml",
         "config/dogtel-secrets.yml",
         "config/dogtel-standalone.yml",
         "config/dogtel-standalone-otlp.yml",
@@ -48,6 +49,7 @@ dd_agent_go_test(
     ],
     embedsrcs = [
         "config/complete.yml",
+        "config/ddot-fargate.yml",
         "config/dogtel-secrets.yml",
         "config/dogtel-standalone-otlp.yml",
         "config/dogtel-standalone.yml",

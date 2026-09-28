@@ -223,6 +223,28 @@ cross-platform by design: the binary runs on the CI host while the *target VM* i
 `foo_win_test.go` carry no Go build constraint (`_win` is not a `GOOS` — only `_windows` is), and constraining them
 would stop Windows suites from ever running from Linux CI.
 
+#### Gazelle adds a new `//go:embed` file to neither `embedsrcs` nor `data`
+
+For `dd_agent_go_test` targets under `test/new-e2e/tests/`, Gazelle maintains `srcs` and `deps` but does not pick up
+the target of a new `//go:embed` directive. Adding a suite file that embeds a config therefore yields a BUILD file
+listing the new `_test.go` in `srcs` — and failing to compile:
+
+```text
+ddot_fargate_test.go:29:12: could not embed config/ddot-fargate.yml: no matching files found
+```
+
+Re-running Gazelle does not fix it; it is a no-op on the missing entry, so the omission looks like there is nothing to
+generate. Add the path to `embedsrcs` (and to `data`, where the sibling configs are also listed) by hand, then
+`bazel run //bazel/buildifier`.
+
+The gap is easy to miss locally because these targets carry `tags = ["manual"]`: they are outside the default
+`bazel test //...` matrix and outside `dda inv test`, so the first thing to notice is the `go_e2e_test_binaries` CI
+job. Verify a change to one explicitly:
+
+```sh
+bazel build //test/new-e2e/tests/<area>:<target>
+```
+
 #### A directory-scoped run deletes `write_pb_go` rules
 
 The `write_pb_go` extension (`bazel/rules/write_pb_go/_gazelle_extension.go`) matches a
