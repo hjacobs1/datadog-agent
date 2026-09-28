@@ -207,6 +207,7 @@ func NewPodAutoscalerInternal(podAutoscaler *datadoghq.DatadogPodAutoscaler) Pod
 		name:      podAutoscaler.Name,
 	}
 	pai.UpdateFromPodAutoscaler(podAutoscaler)
+	pai.UpdateFromOpsAnnotations(podAutoscaler.Annotations)
 	pai.UpdateFromStatus(&podAutoscaler.Status)
 
 	return pai
@@ -340,11 +341,12 @@ func (p *PodAutoscalerInternal) UpdateFromPodAutoscaler(podAutoscaler *datadoghq
 	// without branching on profile-managed vs standalone.
 	// For profile-managed DPAs, UpdateFromProfile() will overwrite this with the profile value.
 	p.previewOptions = parsePreviewAnnotationString(podAutoscaler.Annotations[PreviewAnnotationKey])
-	p.UpdateFromOpsAnnotations(podAutoscaler.Annotations)
 }
 
 // UpdateFromOpsAnnotations updates the PodAutoscalerInternal from the operational annotations
-// (pause, force-fallback). They are set by the user on the Kubernetes object whatever the owner.
+// (pause, force-fallback). They are set by the user on the Kubernetes object whatever the owner,
+// so they are read separately from UpdateFromPodAutoscaler, which the leader only calls for
+// local owners once the object exists.
 func (p *PodAutoscalerInternal) UpdateFromOpsAnnotations(annotations map[string]string) {
 	p.paused = parseOpsBoolAnnotation(annotations, PauseAnnotationKey)
 	p.fallbackForced = parseOpsBoolAnnotation(annotations, ForceFallbackAnnotationKey)
