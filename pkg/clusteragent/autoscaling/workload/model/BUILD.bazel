@@ -6,6 +6,7 @@ go_library(
     srcs = [
         "const.go",
         "doc.go",
+        "forced_resources.go",
         "pod_autoscaler.go",
         "pod_autoscaler_profile.go",
         "pod_autoscaler_string.go",
@@ -37,6 +38,7 @@ go_library(
 dd_agent_go_test(
     name = "model_test",
     srcs = [
+        "forced_resources_test.go",
         "pod_autoscaler_profile_test.go",
         "pod_autoscaler_size_test.go",
         "pod_autoscaler_test.go",
