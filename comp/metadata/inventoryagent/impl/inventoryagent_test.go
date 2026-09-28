@@ -27,6 +27,7 @@ import (
 	logmock "github.com/DataDog/datadog-agent/comp/core/log/mock"
 	sysprobeconfig "github.com/DataDog/datadog-agent/comp/core/sysprobeconfig/def"
 	sysprobeconfigmock "github.com/DataDog/datadog-agent/comp/core/sysprobeconfig/mock"
+	iainterface "github.com/DataDog/datadog-agent/comp/metadata/inventoryagent/def"
 	configFetcher "github.com/DataDog/datadog-agent/pkg/config/fetcher"
 	sysprobeConfigFetcher "github.com/DataDog/datadog-agent/pkg/config/fetcher/sysprobe"
 	configmock "github.com/DataDog/datadog-agent/pkg/config/mock"
@@ -95,6 +96,28 @@ func TestSet(t *testing.T) {
 
 	ia.Set("test", 1234)
 	assert.Equal(t, 1234, ia.data["test"])
+}
+
+func TestForceEnabledOverridesMetadataCollectionGate(t *testing.T) {
+	confOverrides := map[string]any{"enable_metadata_collection": false}
+	assert.False(t, getTestInventoryPayload(t, confOverrides, nil).Enabled)
+
+	requires := makeRequires(fxutil.Test[testDeps](
+		t,
+		fx.Provide(func() log.Component { return logmock.New(t) }),
+		fx.Provide(func() config.Component { return config.NewMockWithOverrides(t, confOverrides) }),
+		fx.Provide(func() sysprobeconfig.Component { return sysprobeconfigmock.NewMock(t) }),
+		fxutil.ProvideOptional[sysprobeconfig.Component](),
+		fx.Provide(func() serializer.MetricSerializer { return serializermock.NewMetricSerializer(t) }),
+		fx.Provide(func() ipc.Component { return ipcmock.New(t) }),
+		fx.Provide(func(ipcComp ipc.Component) ipc.HTTPClient { return ipcComp.GetClient() }),
+		hostnameimpl.MockModule(),
+	))
+	requires.Capabilities = &iainterface.Capabilities{ForceEnabled: true}
+
+	provides := NewComponent(requires)
+	assert.True(t, provides.Comp.(*inventoryagent).Enabled)
+	assert.NotNil(t, provides.Provider.Callback)
 }
 
 func TestGetPayload(t *testing.T) {

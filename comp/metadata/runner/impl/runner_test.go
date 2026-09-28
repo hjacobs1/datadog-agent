@@ -156,3 +156,34 @@ func TestRunnerCreation(t *testing.T) {
 
 	assert.NoError(t, lc.Stop(ctx))
 }
+
+func TestRunnerForceEnabled(t *testing.T) {
+	providerCalled := make(chan struct{}, 1)
+	provider := func(context.Context) time.Duration {
+		providerCalled <- struct{}{}
+		return 1 * time.Minute
+	}
+
+	lc := fxtest.NewLifecycle(t)
+	conf := config.NewMock(t)
+	conf.Set("enable_metadata_collection", false, model.SourceAgentRuntime)
+
+	fxutil.Test[runner.Component](
+		t,
+		fx.Supply(lc),
+		fx.Provide(func() log.Component { return logmock.New(t) }),
+		fx.Provide(func() config.Component { return conf }),
+		fx.Supply(&runner.Capabilities{ForceEnabled: true}),
+		fxutil.ProvideComponentConstructor(NewComponent),
+		fx.Supply(runner.NewProvider(provider)),
+	)
+
+	ctx := context.Background()
+	require.NoError(t, lc.Start(ctx))
+	select {
+	case <-providerCalled:
+	case <-time.After(time.Second):
+		require.Fail(t, "force-enabled metadata runner did not invoke provider")
+	}
+	require.NoError(t, lc.Stop(ctx))
+}

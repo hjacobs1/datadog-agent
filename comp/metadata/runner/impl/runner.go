@@ -36,6 +36,8 @@ type Requires struct {
 	Config config.Component
 
 	Providers []runner.MetadataProvider `group:"metadata_provider"`
+
+	Capabilities *runner.Capabilities `optional:"true"`
 }
 
 // Provides defines the output of the runner component
@@ -59,7 +61,8 @@ func createRunner(deps Requires) *runnerImpl {
 func NewComponent(deps Requires) Provides {
 	r := createRunner(deps)
 
-	if deps.Config.GetBool("enable_metadata_collection") {
+	forceEnabled := deps.Capabilities != nil && deps.Capabilities.ForceEnabled
+	if deps.Config.GetBool("enable_metadata_collection") || forceEnabled {
 		// We rely on FX to start and stop the metadata runner
 		deps.Lc.Append(compdef.Hook{
 			OnStart: func(_ context.Context) error {

@@ -22,6 +22,7 @@ var mockAppServiceEnv = map[string]string{
 	"WEBSITE_STACK":                "NODE",
 	"WEBSITE_NODE_DEFAULT_VERSION": "~18",
 	"FUNCTIONS_EXTENSION_VERSION":  "~4",
+	"REGION_NAME":                  "East US",
 }
 
 func TestGetAppServiceTags(t *testing.T) {
@@ -35,6 +36,7 @@ func TestGetAppServiceTags(t *testing.T) {
 	assert.Equal(t, "1234abcd", linux[AASInstanceID])
 	assert.Equal(t, "test-instance", linux[AASInstanceName])
 	assert.Equal(t, websiteOS, linux[AASOperatingSystem])
+	assert.Equal(t, "East US", linux[AASRegion])
 	assert.Equal(t, "Node.js", linux[AASRuntime])
 	assert.Equal(t, "test-resource-group", linux[AASResourceGroup])
 	assert.Equal(t, "/subscriptions/00000000-0000-0000-0000-000000000000/resourcegroups/test-resource-group/providers/microsoft.web/sites/site-name-test", linux[AASResourceID])

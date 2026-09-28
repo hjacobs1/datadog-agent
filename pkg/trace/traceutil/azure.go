@@ -18,6 +18,7 @@ const (
 	AASInstanceID       = "aas.environment.instance_id"
 	AASInstanceName     = "aas.environment.instance_name"
 	AASOperatingSystem  = "aas.environment.os"
+	AASRegion           = "aas.environment.region"
 	AASRuntime          = "aas.environment.runtime"
 	AASExtensionVersion = "aas.environment.extension_version"
 	AASFunctionRuntime  = "aas.environment.function_runtime"
@@ -46,6 +47,7 @@ func GetAppServicesTags() map[string]string {
 	siteName := os.Getenv("WEBSITE_SITE_NAME")
 	ownerName := os.Getenv("WEBSITE_OWNER_NAME")
 	resourceGroup := os.Getenv("WEBSITE_RESOURCE_GROUP")
+	region := os.Getenv("REGION_NAME")
 	instanceID := getEnvOrUnknown("WEBSITE_INSTANCE_ID")
 	computerName := getEnvOrUnknown("COMPUTERNAME")
 	extensionVersion := os.Getenv("DD_AAS_EXTENSION_VERSION")
@@ -62,6 +64,7 @@ func GetAppServicesTags() map[string]string {
 		AASInstanceID:      instanceID,
 		AASInstanceName:    computerName,
 		AASOperatingSystem: websiteOS,
+		AASRegion:          region,
 		AASRuntime:         currentRuntime,
 		AASResourceGroup:   resourceGroup,
 		AASResourceID:      resourceID,

@@ -19,6 +19,15 @@ import (
 // Component is the component type.
 type Component interface{}
 
+// Capabilities lets an embedding binary opt the metadata runner into behavior
+// that differs from the full Agent defaults.
+type Capabilities struct {
+	// ForceEnabled starts the runner even when enable_metadata_collection is
+	// false. Providers remain responsible for returning a nil callback when
+	// they are disabled.
+	ForceEnabled bool
+}
+
 // MetadataProvider is the callback type for metadata providers registered with the runner.
 type MetadataProvider func(context.Context) time.Duration
 
