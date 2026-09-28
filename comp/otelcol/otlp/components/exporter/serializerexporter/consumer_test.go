@@ -255,9 +255,11 @@ func TestAddRunningMetric_NoSignals(t *testing.T) {
 	assert.Empty(t, c.series)
 }
 
+// No ConsumeHost here on purpose: a hostless workload reports a tag set rather
+// than a host, so ConsumeHost is never called for it. Seeding a host would make
+// this pass even if the emission were (incorrectly) gated on c.hosts.
 func TestAddRunningMetric_Fargate(t *testing.T) {
 	c := newTestSerializerConsumer(ddot, true)
-	c.ConsumeHost("otel-host")
 
 	c.addRunningMetric("agent-hostname", workloadIdentity{fargateTaskARN: "arn:aws:ecs:us-east-1:123:task/cluster/abc"})
 
@@ -267,9 +269,9 @@ func TestAddRunningMetric_Fargate(t *testing.T) {
 	assert.Contains(t, c.series[0].Tags.UnsafeToReadOnlySliceString(), "task_arn:arn:aws:ecs:us-east-1:123:task/cluster/abc")
 }
 
+// Hostless, for the same reason as TestAddRunningMetric_Fargate.
 func TestAddRunningMetric_AzureContainerApps(t *testing.T) {
 	c := newTestSerializerConsumer(ddot, true)
-	c.ConsumeHost("otel-host")
 
 	c.addRunningMetric("agent-hostname", workloadIdentity{aca: &acaIdentity{
 		replica:        "replica-1",
@@ -297,4 +299,12 @@ func TestAddRunningMetric_AzureContainerApps_IncompleteIdentityFallsBackToHost(t
 	require.Len(t, c.series, 1)
 	assert.Equal(t, "otel.ddot_collector.metrics.running", c.series[0].Name)
 	assert.Equal(t, "agent-hostname", c.series[0].Host)
+}
+
+func TestAddRunningMetric_AzureContainerApps_IncompleteIdentityWithoutHostEmitsNothing(t *testing.T) {
+	c := newTestSerializerConsumer(ddot, true)
+
+	c.addRunningMetric("agent-hostname", workloadIdentity{aca: &acaIdentity{name: "my-app"}})
+
+	assert.Empty(t, c.series)
 }

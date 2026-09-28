@@ -343,29 +343,36 @@ func (c *serializerConsumer) ConsumeHost(host string) {
 //
 // On ECS Fargate or Azure Container Apps, wi identifies the workload and the
 // metric is tagged with the task ARN or container app identity instead of a
-// hostname, since those workloads have no host identity.
+// hostname, since those workloads have no host identity. Those variants are
+// deliberately emitted without consulting c.hosts: such a workload reports a
+// tag set rather than a host, so ConsumeHost is never called for it and
+// gating on c.hosts would suppress the metric entirely.
 func (c *serializerConsumer) addRunningMetric(hostname string, wi workloadIdentity) {
 	if c.ipath != ddot || !c.standalone {
-		return
-	}
-	if len(c.hosts) == 0 {
 		return
 	}
 	timestamp := float64(time.Now().Unix())
 	buildTags := tagsFromBuildInfo(c.buildInfo)
 
+	var workloadSerie *metrics.Serie
 	switch {
 	case wi.fargateTaskARN != "":
-		c.series = append(c.series, ddotFargateRunningMetric(wi.fargateTaskARN, timestamp, buildTags))
+		workloadSerie = ddotFargateRunningMetric(wi.fargateTaskARN, timestamp, buildTags)
 	case wi.aca != nil:
-		if serie := ddotAzureContainerAppsRunningMetric(wi.aca, timestamp, buildTags); serie != nil {
-			c.series = append(c.series, serie)
-			return
-		}
-		c.series = append(c.series, ddotRunningMetric(hostname, timestamp, buildTags))
-	default:
-		c.series = append(c.series, ddotRunningMetric(hostname, timestamp, buildTags))
+		workloadSerie = ddotAzureContainerAppsRunningMetric(wi.aca, timestamp, buildTags)
 	}
+	if workloadSerie != nil {
+		c.series = append(c.series, workloadSerie)
+		return
+	}
+
+	// Only the host-attributed metric needs a host: c.hosts must not gate the
+	// hostless workload variants above, since a hostless workload never
+	// produces a ConsumeHost call at all.
+	if len(c.hosts) == 0 {
+		return
+	}
+	c.series = append(c.series, ddotRunningMetric(hostname, timestamp, buildTags))
 }
 
 // ddotRunningMetric creates a built-in metric to report that the DDOT collector
