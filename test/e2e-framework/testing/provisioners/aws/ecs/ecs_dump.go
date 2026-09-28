@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	awsecs "github.com/aws/aws-sdk-go-v2/service/ecs"
 )
 
@@ -22,6 +24,11 @@ const maxStoppedTasksPerService = 3
 // maxServiceEvents bounds the per-service event tail. ECS keeps a long history
 // and only the newest entries describe the current failure.
 const maxServiceEvents = 5
+
+// maxLogLines bounds the CloudWatch log tail fetched per failed container: a
+// crashing container usually explains itself in its first few lines, and this
+// keeps the dump from ballooning on a noisy one.
+const maxLogLines = 20
 
 // DumpECSClusterState reports why an ECS cluster's services are not running.
 //
@@ -36,6 +43,7 @@ func DumpECSClusterState(ctx context.Context, stackName string) (string, error) 
 		return "", fmt.Errorf("failed to load AWS config: %w", err)
 	}
 	client := awsecs.NewFromConfig(cfg)
+	logsClient := cloudwatchlogs.NewFromConfig(cfg)
 
 	clusterArn, err := findClusterForStack(ctx, client, stackName)
 	if err != nil {
@@ -78,7 +86,7 @@ func DumpECSClusterState(ctx context.Context, stackName string) (string, error) 
 		if svc.RunningCount >= svc.DesiredCount {
 			continue
 		}
-		stopped, err := dumpStoppedTasks(ctx, client, clusterArn, name)
+		stopped, err := dumpStoppedTasks(ctx, client, logsClient, clusterArn, name)
 		if err != nil {
 			fmt.Fprintf(&out, "    (could not describe stopped tasks: %v)\n", err)
 			continue
@@ -91,7 +99,7 @@ func DumpECSClusterState(ctx context.Context, stackName string) (string, error) 
 
 // dumpStoppedTasks reports the stop reason of a service's most recent stopped
 // tasks, which is where a task that failed to start explains itself.
-func dumpStoppedTasks(ctx context.Context, client *awsecs.Client, clusterArn, serviceName string) (string, error) {
+func dumpStoppedTasks(ctx context.Context, client *awsecs.Client, logsClient *cloudwatchlogs.Client, clusterArn, serviceName string) (string, error) {
 	listed, err := client.ListTasks(ctx, &awsecs.ListTasksInput{
 		Cluster:       &clusterArn,
 		ServiceName:   &serviceName,
@@ -127,7 +135,70 @@ func dumpStoppedTasks(ctx context.Context, client *awsecs.Client, clusterArn, se
 			// field is where the pull or registry error lands.
 			fmt.Fprintf(&out, "      container %s: exitCode=%s reason=%s\n",
 				derefOr(c.Name, "<unnamed>"), formatExitCode(c.ExitCode), derefOr(c.Reason, ""))
+
+			// A nonzero exit with an empty reason means the container started
+			// and crashed on its own -- its stderr/stdout in CloudWatch is the
+			// only place that explains why.
+			if c.ExitCode == nil || *c.ExitCode == 0 {
+				continue
+			}
+			logTail, err := dumpContainerLog(ctx, client, logsClient, derefOr(task.TaskDefinitionArn, ""), derefOr(task.TaskArn, ""), derefOr(c.Name, ""))
+			if err != nil {
+				fmt.Fprintf(&out, "        (could not fetch logs: %v)\n", err)
+				continue
+			}
+			out.WriteString(logTail)
 		}
+	}
+	return out.String(), nil
+}
+
+// dumpContainerLog fetches the first lines a container wrote to CloudWatch,
+// which is where a config-validation or startup error actually explains itself
+// -- ECS's own exit code and reason fields never carry that detail.
+func dumpContainerLog(ctx context.Context, client *awsecs.Client, logsClient *cloudwatchlogs.Client, taskDefArn, taskArn, containerName string) (string, error) {
+	taskDef, err := client.DescribeTaskDefinition(ctx, &awsecs.DescribeTaskDefinitionInput{TaskDefinition: &taskDefArn})
+	if err != nil {
+		return "", fmt.Errorf("failed to describe task definition %s: %w", taskDefArn, err)
+	}
+
+	var logGroup, streamPrefix string
+	for _, cd := range taskDef.TaskDefinition.ContainerDefinitions {
+		if derefOr(cd.Name, "") != containerName {
+			continue
+		}
+		if cd.LogConfiguration == nil || cd.LogConfiguration.LogDriver != "awslogs" {
+			return "", fmt.Errorf("container %s does not use the awslogs driver", containerName)
+		}
+		logGroup = cd.LogConfiguration.Options["awslogs-group"]
+		streamPrefix = cd.LogConfiguration.Options["awslogs-stream-prefix"]
+	}
+	if logGroup == "" {
+		return "", fmt.Errorf("no awslogs configuration found for container %s", containerName)
+	}
+
+	// The stream name ECS derives is {prefix}/{containerName}/{taskID}; the
+	// task ID is the last path segment of the task ARN.
+	taskID := taskArn
+	if idx := strings.LastIndex(taskArn, "/"); idx >= 0 {
+		taskID = taskArn[idx+1:]
+	}
+	streamName := fmt.Sprintf("%s/%s/%s", streamPrefix, containerName, taskID)
+
+	events, err := logsClient.GetLogEvents(ctx, &cloudwatchlogs.GetLogEventsInput{
+		LogGroupName:  &logGroup,
+		LogStreamName: &streamName,
+		Limit:         aws.Int32(maxLogLines),
+		StartFromHead: aws.Bool(true),
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to get log events from %s/%s: %w", logGroup, streamName, err)
+	}
+
+	var out strings.Builder
+	fmt.Fprintf(&out, "        log tail (%s/%s):\n", logGroup, streamName)
+	for _, ev := range events.Events {
+		fmt.Fprintf(&out, "          %s\n", derefOr(ev.Message, ""))
 	}
 	return out.String(), nil
 }
