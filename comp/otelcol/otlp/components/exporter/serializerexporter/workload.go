@@ -10,8 +10,6 @@ import (
 	"os"
 
 	"go.uber.org/zap"
-
-	"github.com/DataDog/datadog-agent/pkg/util/fargate"
 )
 
 // Azure Container Apps env var names, mirroring cmd/serverless-init/cloudservice/containerapp.go
@@ -23,6 +21,18 @@ const (
 	azureSubscriptionIDEnvVar     = "DD_AZURE_SUBSCRIPTION_ID"
 	azureResourceGroupEnvVar      = "DD_AZURE_RESOURCE_GROUP"
 )
+
+const (
+	ecsFargateEnvVar      = "ECS_FARGATE"
+	awsExecutionEnvEnvVar = "AWS_EXECUTION_ENV"
+)
+
+// isECSFargate mirrors env.IsECSFargate. It is reimplemented here rather than
+// imported because pkg/config/env lives in the root datadog-agent module, which
+// this module (and its consumers, e.g. ddflareextension/impl) must not depend on.
+func isECSFargate() bool {
+	return os.Getenv(ecsFargateEnvVar) != "" || os.Getenv(awsExecutionEnvEnvVar) == "AWS_ECS_FARGATE"
+}
 
 func isAzureContainerApps() bool {
 	_, exists := os.LookupEnv(containerAppNameEnvVar)
@@ -56,7 +66,7 @@ type workloadIdentity struct {
 // cycle, not per metric.
 func detectWorkloadIdentity(ctx context.Context, logger *zap.Logger) workloadIdentity {
 	switch {
-	case fargate.GetOrchestrator() == fargate.ECS:
+	case isECSFargate():
 		taskARN, err := fetchECSTaskARN(ctx)
 		if err != nil {
 			logger.Warn("failed to fetch ECS task ARN; falling back to host-based running metric", zap.Error(err))

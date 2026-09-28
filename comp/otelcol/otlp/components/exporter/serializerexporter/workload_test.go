@@ -7,6 +7,8 @@ package serializerexporter
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 
@@ -17,8 +19,8 @@ import (
 
 func clearWorkloadIdentityEnv(t *testing.T) {
 	for _, envVar := range []string{
-		"ECS_FARGATE",
-		"AWS_EXECUTION_ENV",
+		ecsFargateEnvVar,
+		awsExecutionEnvEnvVar,
 		ecsMetadataURIv4EnvVar,
 		containerAppNameEnvVar,
 		containerAppReplicaNameEnvVar,
@@ -44,11 +46,50 @@ func TestDetectWorkloadIdentity_None(t *testing.T) {
 	assert.Nil(t, wi.aca)
 }
 
-// Note: fargate.GetOrchestrator() reads from pkg/config/env's package-level
-// detected-features cache, whose detection is a no-op in unit test binaries
-// (see env.DetectFeatures's detectionAlwaysDisabledInTests guard) -- so the
-// ECS Fargate branch of detectWorkloadIdentity cannot be driven by env vars
-// here. fetchECSTaskARN itself is covered directly in ecsfargate_test.go.
+func TestDetectWorkloadIdentity_Fargate(t *testing.T) {
+	clearWorkloadIdentityEnv(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte(`{"TaskARN":"arn:aws:ecs:us-east-1:123:task/cluster/abc"}`))
+	}))
+	defer server.Close()
+
+	t.Setenv(ecsFargateEnvVar, "true")
+	t.Setenv(ecsMetadataURIv4EnvVar, server.URL)
+
+	wi := detectWorkloadIdentity(context.Background(), zap.NewNop())
+
+	assert.Equal(t, "arn:aws:ecs:us-east-1:123:task/cluster/abc", wi.fargateTaskARN)
+	assert.Nil(t, wi.aca)
+}
+
+func TestDetectWorkloadIdentity_FargateViaAWSExecutionEnv(t *testing.T) {
+	clearWorkloadIdentityEnv(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte(`{"TaskARN":"arn:aws:ecs:eu-west-1:456:task/cluster/def"}`))
+	}))
+	defer server.Close()
+
+	t.Setenv(awsExecutionEnvEnvVar, "AWS_ECS_FARGATE")
+	t.Setenv(ecsMetadataURIv4EnvVar, server.URL)
+
+	wi := detectWorkloadIdentity(context.Background(), zap.NewNop())
+
+	assert.Equal(t, "arn:aws:ecs:eu-west-1:456:task/cluster/def", wi.fargateTaskARN)
+}
+
+func TestDetectWorkloadIdentity_FargateFetchFailsFallsBackToEmpty(t *testing.T) {
+	clearWorkloadIdentityEnv(t)
+
+	t.Setenv(ecsFargateEnvVar, "true")
+	// ecsMetadataURIv4EnvVar deliberately left unset, so the fetch fails.
+
+	wi := detectWorkloadIdentity(context.Background(), zap.NewNop())
+
+	assert.Empty(t, wi.fargateTaskARN)
+	assert.Nil(t, wi.aca)
+}
 
 func TestDetectWorkloadIdentity_AzureContainerApps(t *testing.T) {
 	clearWorkloadIdentityEnv(t)

@@ -49,7 +49,6 @@ go_library(
         "//pkg/serializer",
         "//pkg/tagset",
         "//pkg/util/compression",
-        "//pkg/util/fargate",
         "//pkg/util/fxutil",
         "//pkg/util/http",
         "//pkg/util/log",
