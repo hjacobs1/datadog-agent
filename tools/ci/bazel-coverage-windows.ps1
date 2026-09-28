@@ -61,6 +61,32 @@ function Invoke-NonFatalStep {
     }
 }
 
+# Debugging attempts around the tests that are timing out
+bazel test --config=gorace `
+  //pkg/process/checks:checks_test `
+  --test_output=streamed `
+  --test_arg=-test.v `
+  --nocache_test_results
+
+bazel coverage --config=go --config=gorace `
+  //pkg/process/checks:checks_test `
+  --test_output=streamed `
+  --test_arg=-test.v `
+  --nocache_test_results `
+  "--test_arg=-test.skip=^TestGetHostname.*Cmd$"
+
+bazel coverage --config=go --config=gorace `
+  //pkg/process/checks:checks_test_systemprobechecks `
+  --test_output=streamed `
+  --test_arg=-test.v `
+  --nocache_test_results
+
+& bazel coverage --config=go --config=gorace `
+  //pkg/process/checks:checks_test `
+  //pkg/process/checks:checks_test_systemprobechecks `
+  --test_output=streamed `
+  --test_arg=-test.v
+
 $bazelExitCode = 0
 $global:LASTEXITCODE = 0
 try {
