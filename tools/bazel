@@ -80,4 +80,22 @@ if [[ $# -gt 0 && ${#extra_args[@]} -gt 0 ]]; then
   set -- "${args[@]}"
 fi
 
+# Emulate the CPU limit containers should normally see via cgroup quota, currently inhibited on Datadog's k8s clusters:
+# https://datadoghq.atlassian.net/wiki/spaces/cxg/pages/3473212607/Container+CPU+limits+in+internal+environments
+if [ -n "${KUBERNETES_CPU_LIMIT-}" ] && [ "$(uname -s)" = Linux ]; then
+  max_cpus=$(awk -v n="$KUBERNETES_CPU_LIMIT" 'BEGIN {
+    if (n ~ /m$/) { sub(/m$/, "", n); n = n / 1000 }  # e.g. 1000m -> 1
+    print int(n) + (n != int(n))  # ceil(n)
+  }')
+  pivot=$(ps -o psr= -p $$ | tr -d ' ') # pivot at this process' last executed CPU to spread the load
+  end=$((pivot + max_cpus - 1))
+  available=$(getconf _NPROCESSORS_ONLN)
+  if [ "$end" -lt "$available" ]; then
+    cpus="$pivot-$end"
+  else
+    cpus="0-$((end - available)),$pivot-$((available - 1))"
+  fi
+  exec taskset -c "$cpus" "$BAZEL_REAL" "$@"
+fi
+
 exec "$BAZEL_REAL" "$@"
